@@ -26,10 +26,6 @@ NUM_SFT_EPOCHS = 3
 TEMPERATURE = 2.0
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-print(f"Using device: {DEVICE}")
-if "cuda" in DEVICE:
-    print(f"CUDA Device Name: {torch.cuda.get_device_name(0)}")
-
 # ==============================================================================
 # 2. VEGA 7 STUDENT MODEL DEFINITION (CORRECTED)
 # ==============================================================================
@@ -177,110 +173,120 @@ class KnowledgeDistillationLoss(nn.Module):
         student_log_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
         return self.kl_div(student_log_probs, teacher_probs)
 
-print(f"Loading teacher model: {TEACHER_MODEL_NAME}...")
-try:
-    teacher_model = AutoModelForCausalLM.from_pretrained(TEACHER_MODEL_NAME, trust_remote_code=True).to(DEVICE)
-    teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_MODEL_NAME, trust_remote_code=True)
-    teacher_model.eval()
-    print("Teacher model loaded successfully.")
-except Exception as e:
-    print(f"Error loading teacher model: {e}")
-    teacher_model = None
 
-if teacher_model:
-    STUDENT_HIDDEN_SIZE = teacher_model.config.hidden_size
-    STUDENT_VOCAB_SIZE = teacher_model.config.vocab_size
+def main():
+    print(f"Using device: {DEVICE}")
+    if "cuda" in DEVICE:
+        print(f"CUDA Device Name: {torch.cuda.get_device_name(0)}")
 
-    student_model = Vega7Model(
-        vocab_size=STUDENT_VOCAB_SIZE,
-        hidden_size=STUDENT_HIDDEN_SIZE,
-        num_layers=STUDENT_NUM_LAYERS,
-        active_channels=ACTIVE_CHANNELS,
-        num_thinking_steps=NUM_THINKING_STEPS
-    ).to(DEVICE)
-    
-    print("\n--- Student Model (Vega 7) Initialized ---")
-    print(f"  - Hidden Size: {STUDENT_HIDDEN_SIZE}, Vocab Size: {STUDENT_VOCAB_SIZE}")
-    
-    optimizer = optim.AdamW(student_model.parameters(), lr=LEARNING_RATE)
-    distillation_loss_fn = KnowledgeDistillationLoss(temperature=TEMPERATURE)
+    print(f"Loading teacher model: {TEACHER_MODEL_NAME}...")
+    try:
+        teacher_model = AutoModelForCausalLM.from_pretrained(TEACHER_MODEL_NAME, trust_remote_code=True).to(DEVICE)
+        teacher_tokenizer = AutoTokenizer.from_pretrained(TEACHER_MODEL_NAME, trust_remote_code=True)
+        teacher_model.eval()
+        print("Teacher model loaded successfully.")
+    except Exception as e:
+        print(f"Error loading teacher model: {e}")
+        teacher_model = None
 
-    text = "The Qwen model, a large language model developed by Alibaba Cloud, has demonstrated exceptional performance on various benchmarks."
-    inputs = teacher_tokenizer(text, return_tensors="pt").to(DEVICE)
-    input_ids = inputs["input_ids"]
+    if teacher_model:
+        STUDENT_HIDDEN_SIZE = teacher_model.config.hidden_size
+        STUDENT_VOCAB_SIZE = teacher_model.config.vocab_size
 
-# ==============================================================================
-# 4. DISTILLATION TRAINING LOOP (CORRECTED)
-# ==============================================================================
-    if student_model:
-        print("\n--- Starting Knowledge Distillation ---")
-        
-        for epoch in range(NUM_DISTILLATION_EPOCHS):
-            student_model.train()
+        student_model = Vega7Model(
+            vocab_size=STUDENT_VOCAB_SIZE,
+            hidden_size=STUDENT_HIDDEN_SIZE,
+            num_layers=STUDENT_NUM_LAYERS,
+            active_channels=ACTIVE_CHANNELS,
+            num_thinking_steps=NUM_THINKING_STEPS
+        ).to(DEVICE)
 
-            # **CORRECTED**: Initialize state at the beginning of each epoch
-            batch_size = input_ids.shape[0]
-            states = [
-                torch.zeros(batch_size, STUDENT_HIDDEN_SIZE, STUDENT_HIDDEN_SIZE).to(DEVICE)
-                for _ in range(STUDENT_NUM_LAYERS)
-            ]
+        print("\n--- Student Model (Vega 7) Initialized ---")
+        print(f"  - Hidden Size: {STUDENT_HIDDEN_SIZE}, Vocab Size: {STUDENT_VOCAB_SIZE}")
 
-            with torch.no_grad():
-                teacher_outputs = teacher_model(input_ids)
-                teacher_logits = teacher_outputs.logits
+        optimizer = optim.AdamW(student_model.parameters(), lr=LEARNING_RATE)
+        distillation_loss_fn = KnowledgeDistillationLoss(temperature=TEMPERATURE)
 
-            student_logits, _ = student_model(input_ids, states)
-            loss = distillation_loss_fn(student_logits, teacher_logits)
+        text = "The Qwen model, a large language model developed by Alibaba Cloud, has demonstrated exceptional performance on various benchmarks."
+        inputs = teacher_tokenizer(text, return_tensors="pt").to(DEVICE)
+        input_ids = inputs["input_ids"]
 
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
-            optimizer.step()
+        # ==============================================================================
+        # 4. DISTILLATION TRAINING LOOP (CORRECTED)
+        # ==============================================================================
+        if student_model:
+            print("\n--- Starting Knowledge Distillation ---")
 
-            print(f"Epoch {epoch + 1}/{NUM_DISTILLATION_EPOCHS}, Loss: {loss.item():.6f}")
+            for epoch in range(NUM_DISTILLATION_EPOCHS):
+                student_model.train()
 
-        print("--- Distillation Finished ---")
+                # **CORRECTED**: Initialize state at the beginning of each epoch
+                batch_size = input_ids.shape[0]
+                states = [
+                    torch.zeros(batch_size, STUDENT_HIDDEN_SIZE, STUDENT_HIDDEN_SIZE).to(DEVICE)
+                    for _ in range(STUDENT_NUM_LAYERS)
+                ]
 
-# ==============================================================================
-# 5. SUPERVISED FINE-TUNING (SFT) (CORRECTED)
-# ==============================================================================
-        def supervised_fine_tuning(model, tokenizer, dataset, num_epochs=3):
-            print("\n--- Starting Supervised Fine-Tuning ---")
-            optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE / 5)
-            loss_fn = nn.CrossEntropyLoss()
+                with torch.no_grad():
+                    teacher_outputs = teacher_model(input_ids)
+                    teacher_logits = teacher_outputs.logits
 
-            for epoch in range(num_epochs):
-                for i, batch in enumerate(dataset):
-                    input_ids = tokenizer(batch["text"], return_tensors="pt")["input_ids"].to(DEVICE)
-                    labels = input_ids.clone()
-                    
-                    batch_size = input_ids.shape[0]
-                    sft_states = [
-                        torch.zeros(batch_size, model.hidden_size, model.hidden_size).to(DEVICE)
-                        for _ in range(model.num_layers)
-                    ]
+                student_logits, _ = student_model(input_ids, states)
+                loss = distillation_loss_fn(student_logits, teacher_logits)
 
-                    logits, _ = model(input_ids, sft_states)
-                    loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(student_model.parameters(), 1.0)
+                optimizer.step()
 
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                print(f"Epoch {epoch + 1}/{NUM_DISTILLATION_EPOCHS}, Loss: {loss.item():.6f}")
 
-                    print(f"SFT Epoch {epoch + 1}, Batch {i+1}, Loss: {loss.item():.4f}")
+            print("--- Distillation Finished ---")
 
-        dummy_sft_dataset = [{"text": "Instruction: Write a poem about AI.\nOutput: In circuits of silicon, a mind begins to bloom."}]
-        supervised_fine_tuning(student_model, teacher_tokenizer, dummy_sft_dataset, num_epochs=NUM_SFT_EPOCHS)
-        
-# ==============================================================================
-# 6. SAVE THE FINAL MODEL
-# ==============================================================================
-        FINAL_MODEL_PATH = "vega7_distilled_model.pt"
-        torch.save(student_model.state_dict(), FINAL_MODEL_PATH)
-        print(f"\n--- Model Saved ---")
-        print(f"Final Vega 7 model state dictionary saved to: {FINAL_MODEL_PATH}")
+        # ==============================================================================
+        # 5. SUPERVISED FINE-TUNING (SFT) (CORRECTED)
+        # ==============================================================================
+            def supervised_fine_tuning(model, tokenizer, dataset, num_epochs=3):
+                print("\n--- Starting Supervised Fine-Tuning ---")
+                optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE / 5)
+                loss_fn = nn.CrossEntropyLoss()
 
-        del teacher_model
-        del student_model
-        gc.collect()
-        torch.cuda.empty_cache()
+                for epoch in range(num_epochs):
+                    for i, batch in enumerate(dataset):
+                        input_ids = tokenizer(batch["text"], return_tensors="pt")["input_ids"].to(DEVICE)
+                        labels = input_ids.clone()
+
+                        batch_size = input_ids.shape[0]
+                        sft_states = [
+                            torch.zeros(batch_size, model.hidden_size, model.hidden_size).to(DEVICE)
+                            for _ in range(model.num_layers)
+                        ]
+
+                        logits, _ = model(input_ids, sft_states)
+                        loss = loss_fn(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+                        optimizer.zero_grad()
+                        loss.backward()
+                        optimizer.step()
+
+                        print(f"SFT Epoch {epoch + 1}, Batch {i+1}, Loss: {loss.item():.4f}")
+
+            dummy_sft_dataset = [{"text": "Instruction: Write a poem about AI.\nOutput: In circuits of silicon, a mind begins to bloom."}]
+            supervised_fine_tuning(student_model, teacher_tokenizer, dummy_sft_dataset, num_epochs=NUM_SFT_EPOCHS)
+
+        # ==============================================================================
+        # 6. SAVE THE FINAL MODEL
+        # ==============================================================================
+            FINAL_MODEL_PATH = "vega7_distilled_model.pt"
+            torch.save(student_model.state_dict(), FINAL_MODEL_PATH)
+            print("\n--- Model Saved ---")
+            print(f"Final Vega 7 model state dictionary saved to: {FINAL_MODEL_PATH}")
+
+            del teacher_model
+            del student_model
+            gc.collect()
+            torch.cuda.empty_cache()
+
+
+if __name__ == "__main__":
+    main()
