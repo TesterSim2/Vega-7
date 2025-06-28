@@ -12,6 +12,10 @@ Install the required dependencies:
 pip install -r requirements.txt
 ```
 
+The training script loads the teacher model with 8-bit weights using
+`device_map="auto"`, so the [Hugging Face Accelerate](https://github.com/huggingface/accelerate)
+library is required.
+
 Run a small distillation demo:
 
 ```bash
