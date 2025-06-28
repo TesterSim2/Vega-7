@@ -43,8 +43,15 @@ class DynamicRecurrenceModule(nn.Module):
         self.active_channels = active_channels
         self.ghost_channels = hidden_size - active_channels
 
-        # (Finch/Goose) Network to generate dynamic parameters for a low-rank update
-        self.param_generator = nn.Linear(hidden_size, 2 * hidden_size * active_channels // hidden_size)
+        # Determine the rank for the low-rank update. We keep it proportional
+        # to the active channels but ensure it is at least 1.
+        self.rank = max(1, active_channels // 4)
+
+        # (Finch/Goose) Network to generate parameters for U and V in the
+        # low-rank decomposition. Output size equals (A + H) * R.
+        self.param_generator = nn.Linear(
+            hidden_size, (self.active_channels + hidden_size) * self.rank
+        )
 
         # (GhostRNN) Cheap, shared linear transformation for the ghost part of the state
         self.ghost_update_gate = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -58,10 +65,12 @@ class DynamicRecurrenceModule(nn.Module):
 
         # 1. Expensive, Dynamic Update (Low-Rank Update)
         params = self.param_generator(x)
-        rank = params.shape[-1] // (2 * self.hidden_size)
-        u, v = torch.chunk(params, 2, dim=-1)
-        u = u.view(-1, self.active_channels, rank)
-        v = v.view(-1, rank, self.hidden_size)
+        u_params, v_params = params.split(
+            [self.active_channels * self.rank, self.hidden_size * self.rank],
+            dim=-1,
+        )
+        u = u_params.view(-1, self.active_channels, self.rank)
+        v = v_params.view(-1, self.rank, self.hidden_size)
         active_update = u @ v
 
         # 2. Cheap, Shared Update
