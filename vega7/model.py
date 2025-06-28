@@ -69,7 +69,9 @@ class LowRankStateMixing(nn.Module):
 
             combined = active + ghost.to(dtype=active.dtype)
             rt = r[:, t].view(B, self.heads, self.head_dim).sigmoid()
-            out = torch.einsum("bhd,bhd->bd", rt, combined)
+            # Preserve the full hidden dimension by elementwise
+            # multiplying per head and then flattening
+            out = (rt * combined).reshape(B, -1)
             outputs.append(out)
 
         output = torch.stack(outputs, dim=1)
