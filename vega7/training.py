@@ -56,7 +56,8 @@ def load_teacher_model(model_name: str = "Qwen/Qwen2.5-0.5B"):
 
 def get_config() -> Dict:
     return {
-        "hidden_size": 512,
+        "state_heads": 4,
+        "hidden_size": 256 * 4,
         "n_layers": 8,
         "ffn_size": 2048,
         "batch_size": 2,
