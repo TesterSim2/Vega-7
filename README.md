@@ -1,6 +1,8 @@
 # Vega-7
 
-This repository contains a prototype implementation of the "Vega 7" model described in the paper **ARWKV: Pretrain is not what we need, an RNN-Attention-Based Language Model Born from Transformer**. The code is provided as a demonstration and loads the Qwen teacher model to distill it into a smaller RNN-based architecture.
+This repository contains a prototype implementation of the **Vega‑7** model described in the paper *"ARWKV: Pretrain is not what we need, an RNN‑Attention‑Based Language Model Born from Transformer"*.
+
+All training utilities are provided as regular Python modules rather than notebooks.
 
 ## Usage
 
@@ -10,10 +12,10 @@ Install the required dependencies:
 pip install -r requirements.txt
 ```
 
-Then run the training demo:
+Run a small distillation demo:
 
 ```bash
 python -m vega7
 ```
 
-This will attempt to download the Qwen model from HuggingFace and run a short distillation and fine-tuning loop. Adjust the constants in `vega7/__init__.py` for different settings.
+The script downloads a small Qwen model from HuggingFace and distills it into a lightweight RWKV‑style network. Configuration and helper functions live in `vega7/`.
