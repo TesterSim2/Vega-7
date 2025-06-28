@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 from tqdm import tqdm
 
 from .model import Vega7Model
@@ -23,7 +23,9 @@ class DistillationLoss(nn.Module):
         self.alpha = alpha
         self.ce_loss = nn.CrossEntropyLoss()
 
-    def forward(self, student_logits: torch.Tensor, teacher_logits: torch.Tensor, labels: torch.Tensor):
+    def forward(
+        self, student_logits: torch.Tensor, teacher_logits: torch.Tensor, labels: torch.Tensor
+    ):
         student_vocab_size = student_logits.size(-1)
         teacher_vocab_size = teacher_logits.size(-1)
         if student_vocab_size != teacher_vocab_size:
@@ -35,22 +37,38 @@ class DistillationLoss(nn.Module):
         student_probs = F.log_softmax(student_logits / self.temperature, dim=-1)
         teacher_probs = F.softmax(teacher_logits / self.temperature, dim=-1)
         distill_loss = F.kl_div(student_probs, teacher_probs, reduction="batchmean") * (
-            self.temperature ** 2
+            self.temperature**2
         )
-        student_loss = self.ce_loss(student_logits.view(-1, student_logits.size(-1)), labels.view(-1))
-        return self.alpha * distill_loss + (1 - self.alpha) * student_loss, distill_loss, student_loss
+        student_loss = self.ce_loss(
+            student_logits.view(-1, student_logits.size(-1)), labels.view(-1)
+        )
+        return (
+            self.alpha * distill_loss + (1 - self.alpha) * student_loss,
+            distill_loss,
+            student_loss,
+        )
 
 
 def load_teacher_model(model_name: str = "Qwen/Qwen2.5-0.5B"):
     print(f"Loading teacher model: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        trust_remote_code=True,
-        device_map="auto",
-        load_in_8bit=True,
-        torch_dtype=torch.float16,
-    )
+    bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            device_map="auto",
+            quantization_config=bnb_config,
+            torch_dtype=torch.float16,
+        )
+    except Exception as e:
+        print(f"8-bit loading failed: {e}\nFalling back to full precision.")
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            device_map="auto",
+            torch_dtype=torch.float16,
+        )
     return model, tokenizer
 
 
@@ -127,7 +145,14 @@ def prepare_data(tokenizer, config: Dict, texts: Optional[List[str]] = None) -> 
     )
 
 
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: int, step: int, config: Dict, is_best: bool = False):
+def save_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    step: int,
+    config: Dict,
+    is_best: bool = False,
+):
     checkpoint = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
@@ -141,7 +166,15 @@ def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, epoch: i
 
 
 @torch.no_grad()
-def generate(model: Vega7Model, tokenizer, prompt: str, max_length: int = 100, temperature: float = 0.8, top_k: int = 50, top_p: float = 0.95) -> str:
+def generate(
+    model: Vega7Model,
+    tokenizer,
+    prompt: str,
+    max_length: int = 100,
+    temperature: float = 0.8,
+    top_k: int = 50,
+    top_p: float = 0.95,
+) -> str:
     model.eval()
     input_ids = tokenizer.encode(prompt, return_tensors="pt").to(DEVICE)
     generated = input_ids.clone()
@@ -150,7 +183,9 @@ def generate(model: Vega7Model, tokenizer, prompt: str, max_length: int = 100, t
         logits, states = model(generated[:, -model.config["max_length"] :], states)
         next_token_logits = logits[:, -1, :] / temperature
         if top_k > 0:
-            indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+            indices_to_remove = (
+                next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+            )
             next_token_logits[indices_to_remove] = -float("Inf")
         if top_p < 1.0:
             sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
@@ -158,7 +193,9 @@ def generate(model: Vega7Model, tokenizer, prompt: str, max_length: int = 100, t
             sorted_indices_to_remove = cumulative_probs > top_p
             sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
             sorted_indices_to_remove[..., 0] = 0
-            indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+            indices_to_remove = sorted_indices_to_remove.scatter(
+                1, sorted_indices, sorted_indices_to_remove
+            )
             next_token_logits[indices_to_remove] = -float("Inf")
         probs = F.softmax(next_token_logits, dim=-1)
         next_token = torch.multinomial(probs, num_samples=1)
@@ -168,10 +205,13 @@ def generate(model: Vega7Model, tokenizer, prompt: str, max_length: int = 100, t
     return tokenizer.decode(generated[0], skip_special_tokens=True)
 
 
-def train_with_distillation(model: Vega7Model, teacher_model, tokenizer, dataloader: DataLoader, config: Dict):
+def train_with_distillation(
+    model: Vega7Model, teacher_model, tokenizer, dataloader: DataLoader, config: Dict
+):
     model = model.to(DEVICE)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=0.01)
     from torch.optim.lr_scheduler import CosineAnnealingLR
+
     scheduler = CosineAnnealingLR(optimizer, T_max=len(dataloader) * config["num_epochs"])
     criterion = DistillationLoss(temperature=config["temperature"], alpha=config["alpha"])
 
@@ -200,7 +240,9 @@ def train_with_distillation(model: Vega7Model, teacher_model, tokenizer, dataloa
                 optimizer.zero_grad()
                 global_step += 1
             epoch_loss += loss.item() * config["gradient_accumulation_steps"]
-            progress.set_postfix({"loss": f"{loss.item() * config['gradient_accumulation_steps']:.4f}"})
+            progress.set_postfix(
+                {"loss": f"{loss.item() * config['gradient_accumulation_steps']:.4f}"}
+            )
             if global_step > 0 and global_step % config["save_steps"] == 0:
                 save_checkpoint(model, optimizer, epoch, global_step, config)
         avg_epoch_loss = epoch_loss / len(dataloader)
@@ -237,8 +279,8 @@ def run_training():
     except Exception as e:
         print(f"Error during training: {e}")
         import traceback
+
         traceback.print_exc()
         gc.collect()
         torch.cuda.empty_cache()
         return None, None
-
