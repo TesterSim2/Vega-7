@@ -10,6 +10,10 @@ readme = "README.md"
 authors = [{name = "Tester"}]
 requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.0",
+]
 
 [project.urls]
 Homepage = "https://example.com"
